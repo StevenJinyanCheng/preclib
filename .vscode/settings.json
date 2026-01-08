@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "xtr1common": "cpp",
+        "cstddef": "cpp",
+        "cstdint": "cpp",
+        "type_traits": "cpp",
+        "iomanip": "cpp"
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": []
+}
