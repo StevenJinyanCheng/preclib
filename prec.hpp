@@ -2070,5 +2070,183 @@ int precn_from_base(precn_t res, const int* digits, size_t len, int base) {
 
 }
 
+// ez to use precn_t type
+struct precn {
+    precn_impl::precn_t p;
+
+    precn() { p = precn_impl::precn_new(0); }
+    template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
+    precn(T v) { p = precn_impl::precn_new(v); }
+    precn(const char* s) { p = precn_impl::precn_new(0); precn_impl::precn_from_str(p, s); }
+    precn(const std::string& s) : precn(s.c_str()) {}
+
+    precn(const precn& other) {
+        p = precn_impl::precn_new(0);
+        precn_impl::precn_set(p, other.p);
+    }
+    precn(precn&& other) noexcept : p(other.p) { other.p = nullptr; }
+    
+    ~precn() { precn_impl::precn_free(p); }
+
+    precn& operator=(const precn& other) {
+        if (this != &other) {
+            if (!p) p = precn_impl::precn_new(0);
+            precn_impl::precn_set(p, other.p);
+        }
+        return *this;
+    }
+    precn& operator=(precn&& other) noexcept {
+        if (this != &other) {
+            precn_impl::precn_free(p);
+            p = other.p;
+            other.p = nullptr;
+        }
+        return *this;
+    }
+
+    precn operator+(const precn& o) const { precn r; precn_impl::precn_add(p, o.p, r.p); return r; }
+    precn operator-(const precn& o) const { precn r; precn_impl::precn_sub(p, o.p, r.p); return r; }
+    precn operator*(const precn& o) const { precn r; precn_impl::precn_mul(p, o.p, r.p); return r; }
+    precn operator/(const precn& o) const { precn q, rem; precn_impl::precn_div(p, o.p, q.p, rem.p); return q; }
+    precn operator%(const precn& o) const { precn q, rem; precn_impl::precn_div(p, o.p, q.p, rem.p); return rem; }
+
+    std::string to_string() const {
+        char* s = precn_impl::precn_to_str(p);
+        std::string res = s ? s : "";
+        free(s);
+        return res;
+    }
+
+    precn_impl::precn_t get() const { return p; }
+};
+
+// signed
+struct precz {
+    precn p;
+    int sign; // 1 = positive, -1 = negative
+    
+    void _normalize() {
+        precn_impl::precn_t ptr = p.get();
+        if (ptr && ptr->rsiz == 1 && ptr->n[0] == 0) {
+            sign = 1;
+        }
+    }
+
+    precz() : p(0), sign(1) {}
+    
+    template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
+    precz(T v) { 
+        if (v == 0) {
+            p = precn(0); sign = 1;
+        } else if (v > 0) {
+            p = precn((uint64_t)v); sign = 1;
+        } else {
+            p = precn((uint64_t)(-v)); sign = -1;
+        }
+    }
+
+    precz(const char* s) {
+        if (s && s[0] == '-') {
+            sign = -1;
+            // Use precn's string parsing indirectly via p's update or create new
+            // Since p is already constructed as 0, we can use precn_from_str
+            precn_impl::precn_from_str(p.p, s + 1);
+        } else {
+            sign = 1;
+            precn_impl::precn_from_str(p.p, s);
+        }
+        _normalize();
+    }
+    
+    precz(const precn& _p, int _sign = 1) : p(_p), sign(_sign) { _normalize(); }
+
+    bool is_zero() const {
+        precn_impl::precn_t ptr = p.get();
+        return (ptr && ptr->rsiz == 1 && ptr->n[0] == 0);
+    }
+
+    precz operator-() const {
+        if (is_zero()) return *this;
+        precz r = *this;
+        r.sign = -r.sign;
+        return r;
+    }
+
+    bool operator==(const precz& o) const {
+        if (sign != o.sign) return false;
+        return precn_impl::precn_cmp(p.get(), o.p.get()) == 0;
+    }
+    bool operator!=(const precz& o) const { return !(*this == o); }
+    
+    bool operator<(const precz& o) const {
+        if (sign != o.sign) return sign < o.sign;
+        int cmp = precn_impl::precn_cmp(p.get(), o.p.get());
+        return sign == 1 ? cmp < 0 : cmp > 0;
+    }
+    bool operator>(const precz& o) const { return o < *this; }
+    bool operator<=(const precz& o) const { return !(*this > o); }
+    bool operator>=(const precz& o) const { return !(*this < o); }
+
+    precz operator+(const precz& o) const {
+        if (sign == o.sign) {
+            precz r;
+            r.sign = sign;
+            precn_impl::precn_add(p.get(), o.p.get(), r.p.get());
+            return r;
+        } else {
+            // different signs
+            int cmp = precn_impl::precn_cmp(p.get(), o.p.get());
+            precz r;
+            if (cmp == 0) {
+                return precz(0);
+            } else if (cmp > 0) {
+                // |this| > |o|. Result sign = this.sign
+                r.sign = sign;
+                precn_impl::precn_sub(p.get(), o.p.get(), r.p.get());
+            } else {
+                // |o| > |this|. Result sign = o.sign
+                r.sign = o.sign;
+                precn_impl::precn_sub(o.p.get(), p.get(), r.p.get());
+            }
+            return r;
+        }
+    }
+
+    precz operator-(const precz& o) const {
+        return *this + (-o);
+    }
+
+    precz operator*(const precz& o) const {
+        precz r;
+        precn_impl::precn_mul(p.get(), o.p.get(), r.p.get());
+        r.sign = sign * o.sign;
+        r._normalize();
+        return r;
+    }
+
+    precz operator/(const precz& o) const {
+        precz q;
+        precn rem_ign;
+        precn_impl::precn_div(p.get(), o.p.get(), q.p.get(), rem_ign.p);
+        q.sign = sign * o.sign;
+        q._normalize();
+        return q;
+    } 
+
+    precz operator%(const precz& o) const {
+        precn q_ign;
+        precz rem;
+        precn_impl::precn_div(p.get(), o.p.get(), q_ign.p, rem.p.get());
+        rem.sign = sign; // remainder follows dividend sign typically in C
+        rem._normalize();
+        return rem;
+    }
+
+    std::string to_string() const {
+        std::string s = p.to_string();
+        if (sign == -1 && s != "0") return "-" + s;
+        return s;
+    }
+};
  /* namespace precn_impl */
 #endif /* PREC_HPP */
