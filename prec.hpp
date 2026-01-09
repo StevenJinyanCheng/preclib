@@ -33,14 +33,14 @@ __preclib_hi _hello;
 
 
 struct __precn_struct {
-  uint64_t asiz; // 分配的块数 (warningated blocks)
+  uint64_t asiz; // 分配的块数 (allocated blocks)
   uint64_t rsiz; // 实际使用的块数 (used blocks)
   uint32_t *n;   // little endian words
 };
-typedef struct __precn_struct *precn_t;
+
 
 namespace precn_impl {
-
+typedef struct __precn_struct *precn_t;
 // Global configuration flags
 static bool g_enable_fft = true;
 
@@ -2069,5 +2069,6 @@ int precn_from_base(precn_t res, const int* digits, size_t len, int base) {
 }
 
 }
+
  /* namespace precn_impl */
 #endif /* PREC_HPP */
