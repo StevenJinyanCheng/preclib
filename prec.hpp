@@ -9,7 +9,7 @@
 #ifndef __max
 #define __max(a,b) (((a)>(b))?(a):(b))
 #endif
-#define PREC_VERSION "0.1.0"
+#define PREC_VERSION "1.1"
 #define _preclib_log(msg) fprintf(stderr, "[preclib] %s\n", msg)
 #include <stdio.h>
 #include <math.h>
@@ -17,15 +17,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <type_traits>
+#include <string>
 #include <vector>
+#include <map>
 #include <complex>
 #include <algorithm>
 #ifdef PRECLIB_HI
 struct __preclib_hi{
-  volatile __preclib_hi(){
+  __preclib_hi(){
     printf("Hello from preclib v%s and Steven. Have a nice day!\n", PREC_VERSION);
   }
-}
+};
 __preclib_hi _hello;
 #endif
 
@@ -1533,6 +1535,537 @@ int precn_mod(precn_t a, precn_t b, precn_t res) {
     precn_div(a, b, NULL, res);
     precn_free(q);
     return 0;
+}
+
+// Integer Square Root: res = floor(sqrt(a))
+// Optimized using Inverse Square Root Newton Iteration (Division-Free Loop)
+// x_{k+1} = x_k * (3 - a * x_k^2) / 2   (Converges to 1/sqrt(a))
+// Sqrt(a) = a * x_final
+int precn_sqrt(precn_t a, precn_t res) {
+    if (!a || !res) return -1;
+    if (a->rsiz == 0) { precn_set(res, 0); return 0; }
+    
+    // 1. Normalize A to have MSB at nice boundary or effectively fixed point?
+    // We treat A as integer.
+    // 1/sqrt(A) is fractional.
+    // We need fixed point math.
+    // Let's solve for integer X such that X approx 1/sqrt(A) * 2^K.
+    
+    // Easier approach for Integer SQRT of big integer N:
+    // Standard Newton on Square Root: x = (x + N/x)/2.
+    // This is slow due to division.
+    
+    // Inverse Sqrt approach:
+    // We want X ~ 2^k / sqrt(N).
+    // Let N be our input 'a'.
+    // Let target precision be bit length L.
+    // We compute InvSqrt to accuracy L.
+    
+    // Estimate bits of a
+    uint32_t msb = a->n[a->rsiz - 1];
+    int lz = 0;
+    while ((msb & ((uint32_t)0x80000000 >> lz)) == 0 && lz < 32) lz++;
+    int64_t a_bits = (uint64_t)a->rsiz * 32 - lz;
+    
+    // We want result sqrt(a) which has bits_res = ceil(a_bits / 2).
+    int64_t res_bits = (a_bits + 1) / 2;
+    
+    // If small, use simple method or just standard float estimate
+    if (a->rsiz <= 2) {
+        double d = 0;
+        if (a->rsiz == 1) d = a->n[0];
+        else d = (double)a->n[1] * 4294967296.0 + a->n[0];
+        uint64_t s = (uint64_t)sqrt(d);
+        precn_set(res, s);
+        return 0;
+    }
+    
+    // Use Coupled Newton Iteration for 1/sqrt(A):
+    // Let X approx 1/sqrt(A).
+    // Newton: X' = X/2 * (3 - A*X^2).
+    // But we are working with Integers.
+    // Scaling:
+    // Let A_norm = A. (We treat as fractional 0.A_norm in some virtual point?)
+    // No, standard integer scaling.
+    // We want X_final * X_final * A approx 2^(OutputScale).
+    
+    // Alternative:
+    // N_sqrt approximation using Division-based Newton but with increasing precision?
+    // "Newton with dynamic precision" is the standard trick.
+    // Start with 1 word, then 2, 4, 8...
+    // Division at size K is expensive, but we only do it constant times.
+    // Total time T(N) = Div(N) + Div(N/2) + ... = 2 Div(N).
+    // The previous implementation was doing Div(N) * Log(N) times!
+    
+    // Let's implement Dynamic Precision Newton Sqrt (Division based is fine if dynamic).
+    // X_{k+1} = (X_k + A / X_k) / 2
+    // But computed at precision required for step k.
+    
+    // Initial guess: 32-bit hardware sqrt
+    // Get top 64 bits of A
+    // (If fewer, handled by small case above)
+    // Extract high 64 bits for estimation
+    // Need to shift 'a' to get top 64 bits.
+    
+    // Shift amount to align MSB of A to bit 63?
+    // Actually just take top 2 words.
+    // If a->rsiz is large, we want top roughly.
+    
+    // Simple start guess:
+    // We want sqrt(A). Target bits: res_bits.
+    // We start with guess of length... 1 word?
+    // Let's just do recursive Sqrt?
+    // Sqrt(A) = Sqrt(A_high) << shift.
+    // Sqrt(A) ~ Sqrt(A >> 2k) << k
+    
+    // Recursive Sqrt Implementation:
+    // 1. If A is small (<= 2 words), use hardware.
+    // 2. Normalize A so even bit length? (Optional)
+    // 3. Let 'half' = A >> (2 * floor(bits/4)).  (Quarters?)
+    //    Actually split A into High/Low.
+    //    We want X = Sqrt(A).
+    //    Let k be approx bits/2.
+    //    Let A_high = A >> 2k.
+    //    X_high = Sqrt(A_high).
+    //    Guess X0 = X_high << k.
+    //    Refine X = (X0 + A/X0)/2.
+    //    This is ONE iter of Newton.
+    //    If X_high is accurate to m bits, X is accurate to 2m bits.
+    //    So we recursively match precision!
+    
+    // Recursive function not needed. Loop up from small size.
+    // Size sequence: 64 bits -> 128 -> 256 ... -> full.
+    
+    // Top 64 bits estimation
+    // We need the 'scale' (shift) such that we process top words.
+    // Loop variable 'current_bits' doubles until >= res_bits.
+    
+    // Determine shift for top 64 bits of A
+    // We want to construct precn 'start' from top words of A.
+    // We need roughly 2 words of A at MSB.
+    
+    // Let's pick a starting size.
+    uint64_t start_shift_bits = 0;
+    if (a_bits > 64) start_shift_bits = a_bits - 64;
+    // Align to even shift for square root property Sqrt(A * 2^2k) = Sqrt(A) * 2^k
+    start_shift_bits &= ~1ULL; // Ensure even
+    
+    precn_t top = precn_new(0);
+    precn_shift_right(res, a, start_shift_bits); // Use 'res' as temp storage for top
+    precn_set(top, res);
+    
+    // Hardware sqrt on top (approx)
+    double d = 0;
+    if (top->rsiz > 0) d += top->n[0];
+    if (top->rsiz > 1) d += (double)top->n[1] * 4294967296.0;
+    if (top->rsiz > 2) d += (double)top->n[2] * 18446744073709551616.0; // Rare if 64 bits
+    
+    uint64_t hw_sqrt = (uint64_t)sqrt(d);
+    precn_set(res, hw_sqrt);
+    
+    precn_free(top);
+    
+    // Current precision of 'res' relative to 'a'
+    // 'res' corresponds to sqrt(a >> start_shift_bits).
+    // The "exponent" of 'res' is effectively 'start_shift_bits / 2'.
+    
+    int64_t current_shift = start_shift_bits; // 2k
+    
+    precn_t t = precn_new(0);
+    precn_t sum_x = precn_new(0);
+    precn_t a_shifted = precn_new(0);
+    
+    while (current_shift > 0) {
+        // We have guess 'res' for A >> current_shift.
+        // We want next guess for A >> next_shift.
+        // Where next_shift approx current_shift / 2.
+        
+        int64_t next_shift = current_shift / 2;
+        // Align even
+        next_shift &= ~1ULL;
+        
+        // Scale 'res' up to match new domain
+        // res_new_guess = res << (current_shift - next_shift)/2
+        int64_t shift_diff = current_shift - next_shift;
+        precn_shift_left(res, res, shift_diff / 2);
+        
+        // Newton Step: x = (x + (A >> next_shift) / x) / 2
+        // We need (A >> next_shift).
+        precn_shift_right(a_shifted, a, next_shift);
+        
+        // t = a_shifted / res
+        precn_div(a_shifted, res, t, NULL);
+        
+        // x = (res + t) / 2
+        precn_add(res, t, sum_x);
+        precn_shift_right(res, sum_x, 1);
+        
+        current_shift = next_shift;
+    }
+    
+    // Final cleanup iteration at full precision to handle last bit errors?
+    // The loop ends when current_shift == 0.
+    // Usually one more iteration is good policy for perfect integer sqrt.
+    
+    // t = a / res
+    precn_div(a, res, t, NULL);
+    precn_add(res, t, sum_x);
+    precn_shift_right(res, sum_x, 1);
+    
+    precn_free(t); precn_free(sum_x); precn_free(a_shifted);
+    return 0;
+}
+
+// ==========================================================
+// String Conversion (Base 10) - O(N log^2 N)
+// ==========================================================
+
+// Helpers for Fast Base Conversion
+static std::vector<precn_t> g_pow10_cache;
+
+// Ensure powers of 10 exist up to 10^(9 * 2^k) covering 'bits' size
+// Each entry i stores 10^(9 * 2^i)
+// i=0: 10^9
+// i=1: 10^18
+// ...
+void _precn_ensure_powers(uint64_t bits) {
+    // 10^9 is approx 2^29.9
+    // 10^(9 * 2^k) approx 2^(30 * 2^k)
+    // We need 30 * 2^k >= bits
+    
+    if (g_pow10_cache.empty()) {
+        g_pow10_cache.push_back(precn_new(1000000000));
+    }
+    
+    // Last power
+    while (true) {
+        precn_t last = g_pow10_cache.back();
+        // Check size roughly
+        uint64_t est_bits = (uint64_t)last->rsiz * 32;
+        if (est_bits > bits + 64) break; // Enough coverage
+        
+        precn_t next = precn_new(0);
+        precn_mul_auto(last, last, next);
+        g_pow10_cache.push_back(next);
+    }
+}
+
+// Helper to convert exactly, returning string
+std::string _precn_to_str_inner(precn_t a, int level) {
+    if (level < 0) { // Base: < 10^9
+        uint32_t val = (a->rsiz > 0) ? a->n[0] : 0; 
+        return std::to_string(val);
+    }
+    
+    precn_t p = g_pow10_cache[level];
+    
+    if (precn_cmp(a, p) < 0) {
+       return _precn_to_str_inner(a, level - 1);
+    }
+    
+    precn_t q = precn_new(0);
+    precn_t r = precn_new(0);
+    precn_div(a, p, q, r);
+    
+    std::string s_q = _precn_to_str_inner(q, level - 1);
+    std::string s_r = _precn_to_str_inner(r, level - 1);
+    
+    precn_free(q); precn_free(r);
+    
+    // Pad R
+    size_t expected = 9 * (1ULL << level);
+    if (s_r.length() < expected) {
+        std::string pad(expected - s_r.length(), '0');
+        return s_q + pad + s_r;
+    }
+    return s_q + s_r;
+}
+
+char* precn_to_str(precn_t a) {
+    if (!a || a->rsiz == 0) {
+        char* s = (char*)malloc(2); strcpy(s, "0"); return s;
+    }
+    
+    _precn_ensure_powers(a->rsiz * 32);
+    
+    // Find starting level
+    int level = 0;
+    while ((size_t)level < g_pow10_cache.size() && precn_cmp(a, g_pow10_cache[level]) >= 0) {
+        level++;
+    }
+    // Now a < powers[level], so we split using powers[level-1]
+    
+    std::string res = _precn_to_str_inner(a, level - 1);
+    
+    char* ret = (char*)malloc(res.length() + 1);
+    strcpy(ret, res.c_str());
+    return ret;
+}
+
+// Recursive Parse
+// str is substring
+void _precn_from_str_rec(precn_t res, const char* str, size_t len, int level) {
+    // Base Case
+    if (len <= 9) { // Single chunk
+        if (len == 0) { precn_set(res, 0); return; }
+        std::string s(str, len);
+        uint32_t val = (uint32_t)strtoul(s.c_str(), NULL, 10);
+        precn_set(res, val);
+        return;
+    }
+    
+    // Standard D&C:
+    // val = High * 10^k + Low
+    // Split at 'right' side to align with powers of 10.
+    // Let's use the largest power available that divides the string.
+    
+    // Find largest k such that 9*2^k < len
+    int k = 0;
+    while ((9ULL << (k+1)) < len) k++;
+    
+    size_t split_len = 9 * (1ULL << k); // Length of Low part
+    size_t high_len = len - split_len;
+    
+    precn_t high = precn_new(0);
+    precn_t low = precn_new(0);
+    
+    _precn_from_str_rec(high, str, high_len, k); // Recurse
+    _precn_from_str_rec(low, str + high_len, split_len, k);
+    
+    // Res = High * Pow + Low
+    _precn_ensure_powers(len * 4); // ample bits
+    
+    // powers[k] is 10^(9*2^k), which matches split_len
+    precn_t p = g_pow10_cache[k]; 
+    
+    precn_t term = precn_new(0);
+    precn_mul_auto(high, p, term);
+    
+    precn_add(term, low, res);
+    
+    precn_free(high); precn_free(low); precn_free(term);
+}
+
+int precn_from_str(precn_t res, const char* str) {
+    if (!res || !str) return -1;
+    size_t len = strlen(str);
+    if (len == 0) { precn_set(res, 0); return 0; }
+    
+    _precn_ensure_powers(len * 4); // 3.32 bits per digit is safe upper bound
+    _precn_from_str_rec(res, str, len, 0);
+    return 0;
+}
+
+// ==========================================================
+// Arbitrary Base Conversion - O(N log^2 N)
+// ==========================================================
+
+static std::map<int, std::vector<precn_t>> g_base_powers;
+
+// Get chunk size (number of digits in base that fit in u32)
+inline int _precn_base_chunk(int base) {
+    if (base < 2) return 0;
+    // Max power < 2^32
+    uint64_t v = base;
+    int k = 1;
+    while (v * base < 0xFFFFFFFFULL) {
+        v *= base;
+        k++;
+    }
+    return k;
+}
+
+void _precn_ensure_base_powers(int base, uint64_t bits) {
+    auto& cache = g_base_powers[base];
+    if (cache.empty()) {
+        int k = _precn_base_chunk(base);
+        // Compute base^k
+        uint64_t v = 1; 
+        for(int i=0; i<k; ++i) v *= base;
+        cache.push_back(precn_new(v));
+    }
+    
+    while (true) {
+        precn_t last = cache.back();
+        uint64_t est_bits = (uint64_t)last->rsiz * 32;
+        if (est_bits > bits + 64) break;
+        
+        precn_t next = precn_new(0);
+        precn_mul_auto(last, last, next);
+        cache.push_back(next);
+    }
+}
+
+// Digits are written to *out, returns number of digits written
+// output order: Little Endian? or Big Endian? 
+// Standard expected is usually Big Endian (MSD first) for printing.
+// But for array access, [0] as LSD is easier math?
+// Let's stick to Big Endian [0] = MSD, to match string convention.
+// This matches standard "base representation".
+void _precn_to_base_rec(precn_t a, int base, int level, std::vector<int>& out) {
+    if (a->rsiz == 0) {
+        // Zero
+        return; 
+    }
+    
+    if (level < 0) {
+        // Fits in u32 chunk
+        int k = _precn_base_chunk(base);
+        uint32_t val = (a->rsiz > 0) ? a->n[0] : 0;
+        
+        // Extract digits. Wait, order?
+        // We want specific number of digits 'k', usually? 
+        // Or just whatever digits 'val' has?
+        // Inner blocks typically need PADDING.
+        // We should handle padding at parent level or produce fixed size?
+        
+        std::vector<int> tmp;
+        if (val == 0) {
+             // 0
+        } else {
+            while (val > 0) {
+                tmp.push_back(val % base);
+                val /= base;
+            }
+        }
+        // tmp has LSD first. Reverse for MSD first.
+        for(int i=(int)tmp.size()-1; i>=0; --i) out.push_back(tmp[i]);
+        return;
+    }
+    
+    auto& cache = g_base_powers[base];
+    if ((size_t)level >= cache.size()) return; // Should not happen
+    
+    precn_t p = cache[level];
+    
+    // a = q * p + r
+    // If a < p, high part is 0.
+    if (precn_cmp(a, p) < 0) {
+        // High is 0. Just recurse on Low (a).
+        // BUT we need padding for High if this is not the root.
+        // The recursion D&C logic: High Part, then Low Part.
+        // If High Part is 0, we output nothing? 
+        // Only if we are at Root. If valid inner node, High Part 0 means '000...'
+        // Handling padding inside recursion is messy.
+        // Simpler: _precn_to_base_rec returns digits. Caller pads.
+        
+        // Let's enforce: inner levels must produce exact # digits? 
+        // The chunk size at level 'level' is:
+        // k * 2^(level+1)? No.
+        // Cache[0]: chunk_k digits.
+        // Cache[level]: chunk_k * 2^level digits.
+        
+        // We assume this function is only called for 'a'. 
+        // Padding is handled by wrapper if needed? 
+        // Here, we just output 'a'.
+        _precn_to_base_rec(a, base, level - 1, out);
+        return;
+    }
+    
+    precn_t q = precn_new(0);
+    precn_t r = precn_new(0);
+    precn_div(a, p, q, r);
+    
+    _precn_to_base_rec(q, base, level - 1, out);
+    
+    // For R, we MUST capture output and pad to left.
+    size_t start_idx = out.size();
+    _precn_to_base_rec(r, base, level - 1, out);
+    
+    // Expected digits for R block:
+    int k = _precn_base_chunk(base);
+    size_t expected_r_len = (size_t)k * (1ULL << level);
+    size_t produced = out.size() - start_idx;
+    
+    if (produced < expected_r_len) {
+        // Insert zeros at start_idx
+        size_t pad = expected_r_len - produced;
+        out.insert(out.begin() + start_idx, pad, 0);
+    }
+    
+    precn_free(q); precn_free(r);
+}
+
+int* precn_to_base(precn_t a, size_t* out_len, int base) {
+    if (!a || base < 2) return NULL;
+    
+    if (a->rsiz == 0) {
+        if (out_len) *out_len = 1;
+        int* res = (int*)malloc(sizeof(int));
+        res[0] = 0;
+        return res;
+    }
+
+    _precn_ensure_base_powers(base, a->rsiz * 32);
+    auto& cache = g_base_powers[base];
+    
+    int level = 0;
+    while ((size_t)level < cache.size() && precn_cmp(a, cache[level]) >= 0) {
+        level++;
+    }
+    
+    std::vector<int> buf;
+    _precn_to_base_rec(a, base, level - 1, buf);
+    
+    if (buf.empty()) buf.push_back(0);
+
+    if (out_len) *out_len = buf.size();
+    int* res = (int*)malloc(buf.size() * sizeof(int));
+    for(size_t i=0; i<buf.size(); ++i) res[i] = buf[i];
+    return res;
+}
+
+void _precn_from_base_rec(precn_t res, const int* digits, size_t len, int base, int level) {
+    int k_chunk = _precn_base_chunk(base);
+    
+    if (len <= (size_t)k_chunk) {
+        // Base case: Convert directly
+        uint64_t val = 0;
+        for(size_t i=0; i<len; ++i) {
+            val = val * base + digits[i];
+        }
+        precn_set(res, val);
+        return;
+    }
+    
+    // Split
+    // Find largest power level 'p' such that capacity(p) <= len/2 roughly?
+    // Actually we want capacity(level) < len?
+    // Cache[level] capacity is k * 2^level digits.
+    // We want split point aligned.
+    
+    // Find largest k such that chunk * 2^k < len
+    int k = 0;
+    while ( ((unsigned long long)k_chunk << (k+1)) < len ) k++;
+    
+    size_t split_capacity = (size_t)k_chunk * (1ULL << k);
+    
+    size_t low_len = split_capacity;
+    size_t high_len = len - low_len;
+    
+    precn_t high = precn_new(0);
+    precn_t low = precn_new(0);
+    
+    _precn_from_base_rec(high, digits, high_len, base, k);
+    _precn_from_base_rec(low, digits + high_len, low_len, base, k);
+    
+    _precn_ensure_base_powers(base, len * 32); // Approximate
+    precn_t p = g_base_powers[base][k];
+    
+    precn_t term = precn_new(0);
+    precn_mul_auto(high, p, term);
+    precn_add(term, low, res);
+    
+    precn_free(high); precn_free(low); precn_free(term);
+}
+
+int precn_from_base(precn_t res, const int* digits, size_t len, int base) {
+     if (!res || !digits || len == 0) { precn_set(res, 0); return 0; }
+     if (base < 2) return -1;
+     
+     _precn_ensure_base_powers(base, len * 16); // Safe bet
+     _precn_from_base_rec(res, digits, len, base, 0);
+     return 0;
 }
 
 }
