@@ -37,6 +37,49 @@ The library implements a tiered multiplication strategy:
 
 ## Usage
 
+### Modern C++ API (Recommended)
+
+The library provides RAII wrappers for automatic memory management and operator overloading.
+
+#### Unsigned Integers (`precn`)
+
+```cpp
+#include "prec.hpp"
+#include <iostream>
+
+int main() {
+    // Initialize from string or integer
+    precn a = "12345678901234567890";
+    precn b = 12345;
+    
+    // Arithmetic operations (+, -, *, /, %)
+    precn c = a * b;
+    precn d = c / 100;
+    
+    std::cout << "Result: " << c.to_string() << std::endl;
+    // Automatic cleanup
+    return 0;
+}
+```
+
+#### Signed Integers (`precz`)
+
+```cpp
+#include "prec.hpp"
+
+int main() {
+    precz pos = "100";
+    precz neg = -50;
+    
+    precz res = pos + neg; // 50
+    res = res * -2;        // -100
+}
+```
+
+### Low-Level API
+
+For manual memory control, use `precn_impl` namespace.
+
 ```cpp
 #include "prec.hpp"
 
