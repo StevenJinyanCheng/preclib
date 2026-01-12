@@ -22,6 +22,15 @@
 #include <map>
 #include <complex>
 #include <algorithm>
+#include "uint128.hpp"
+#ifndef __GNUC__
+#ifndef __clang__
+// MSVC or stuff
+// TODO: implement __int128
+//#error "请下载GCC或Clang编译器以支持本库的完整功能。"
+#define PRECLIB_INT128_USE_CUSTOM
+#endif
+#endif
 #ifdef PRECLIB_HI
 struct __preclib_hi{
   __preclib_hi(){
@@ -805,20 +814,28 @@ int precn_mul_ntt(precn_t a, precn_t b, precn_t res) {
     size_t n = 1;
     while (n < as + bs) n <<= 1;
     
+    //using unsigned_int128 = unsigned __int128;
+#ifdef PRECLIB_INT128_USE_CUSTOM
+    using unsigned_int128 = preclib_uint128;
+#else
     using unsigned_int128 = unsigned __int128;
-    
+#endif
     // M = P1 * P2 * P3 = 0x4114009ed000061800001
-    static const unsigned_int128 M = ((unsigned_int128)0x411400 << 64) | 0x9ed000061800001ULL;
     
+    // static const unsigned_int128 M = ((unsigned_int128)0x411400 << 64) | 0x9ed000061800001ULL;
+    static const unsigned_int128 M = unsigned_int128(0x411400, 0x9ed000061800001ULL);
     // C1 = M1 * inv1 = 0x258ad1c6205353045308eb
-    static const unsigned_int128 C1 = ((unsigned_int128)0x258ad1 << 64) | 0xc6205353045308ebULL;
-    
+    // static const unsigned_int128 C1 = ((unsigned_int128)0x258ad1 << 64) | 0xc6205353045308ebULL;
+    static const unsigned_int128 C1 = unsigned_int128(0x258ad1, 0xc6205353045308ebULL);
     // C2 = M2 * inv2 = 0xb7799b9802e42304316b3
-    static const unsigned_int128 C2 = ((unsigned_int128)0xb7799 << 64) | 0xb9802e42304316b3ULL;
-    
+    // static const unsigned_int128 C2 = ((unsigned_int128)0xb7799 << 64) | 0xb9802e42304316b3ULL;
+    static const unsigned_int128 C2 = unsigned_int128(0xb7799, 0xb9802e42304316b3ULL);
     // C3 = M3 * inv3 = 0x1011948a4c7e6b2ce9e064
-    static const unsigned_int128 C3 = ((unsigned_int128)0x101194 << 64) | 0x8a4c7e6b2ce9e064ULL;
-    
+    // static const unsigned_int128 C3 = ((unsigned_int128)0x101194 << 64) | 0x8a4c7e6b2ce9e064ULL;
+    static const unsigned_int128 C3 = unsigned_int128(0x101194, 0x8a4c7e6b2ce9e064ULL);
+
+    static const unsigned_int128 s1_120 = unsigned_int128(1ull << 56, 0);// 1 << 120
+
     // Approximations for quotient estimation (inv_Pi = (double)(Ci) / M)
     // Actually D_i should be C_i / M.
     static const double D1 = 5.76879912487719304082e-01;
@@ -866,17 +883,17 @@ int precn_mul_ntt(precn_t a, precn_t b, precn_t res) {
         
         // Correction for precision errors in float approximation
         if (val >= M) {
-             if (val > ((unsigned_int128)1 << 120)) { // Underflow check (val became very large positive because it was negative)
-                 val += M;
+             if (val > s1_120) { // Underflow check (val became very large positive because it was negative)
+                 val = val + M;
              } else {
-                 val -= M;
-                 if (val >= M) val -= M;
+                 val = val - M;
+                 if (val >= M) val = val - M;
              }
         }
 
-        val += carry;
-        res->n[i] = (uint32_t)(val & 0xFFFFFFFF);
-        carry = val >> 32;
+        val = val + carry;
+        res->n[i] = (uint32_t)(val.lo & 0xFFFFFFFF);
+        carry = val.rsft32();
     }
     
     size_t idx = res_len;
@@ -884,8 +901,8 @@ int precn_mul_ntt(precn_t a, precn_t b, precn_t res) {
         if(idx >= res->asiz) {
              precn_realloc(res, idx + 10);
         }
-        res->n[idx] = (uint32_t)(carry & 0xFFFFFFFF);
-        carry >>= 32;
+        res->n[idx] = (uint32_t)(carry.lo & 0xFFFFFFFF);
+        carry = carry.rsft32();
         idx++;
     }
     
@@ -965,6 +982,67 @@ int precn_mul_fft_complex(precn_t a, precn_t b, precn_t res) {
         res->rsiz--;
     }
     
+    return 0;
+}
+
+// Hybrid Karatsuba-NTT for very large inputs
+// Breaks down the multiplication until chunks are small enough for NTT
+int precn_mul_karatsuba_ntt(precn_t a, precn_t b, precn_t res) {
+    uint64_t as = a->rsiz;
+    uint64_t bs = b->rsiz;
+
+    // Safety threshold for NTT
+    // 4 million words per operand -> 8 million result size.
+    // Safe for ntt implementation.
+    const uint64_t NTT_SAFE_LIMIT = 4000000; 
+
+    if (as + bs < 2 * NTT_SAFE_LIMIT) {
+        // Safe to use NTT directly
+#ifdef PRECN_USE_FFT_MUL
+        return precn_mul_fft_complex(a, b, res);
+#else
+        return precn_mul_ntt(a, b, res);
+#endif
+    }
+    
+    // Standard Karatsuba recursive decomposition
+    if (as < bs) return precn_mul_karatsuba_ntt(b, a, res);
+
+    uint64_t n = __max(as, bs);
+    uint64_t m = (n + 1) / 2;
+
+    precn_t a0 = precn_slice(a, 0, m);
+    precn_t a1 = precn_slice(a, m, as > m ? as - m : 0);
+    precn_t b0 = precn_slice(b, 0, m);
+    precn_t b1 = precn_slice(b, m, bs > m ? bs - m : 0);
+
+    precn_t z0 = precn_new(0);
+    precn_t z2 = precn_new(0);
+    precn_t z1 = precn_new(0);
+
+    // Call self recursively
+    precn_mul_karatsuba_ntt(a0, b0, z0);
+    precn_mul_karatsuba_ntt(a1, b1, z2);
+
+    precn_t sum_a = precn_new(0); precn_add(a0, a1, sum_a);
+    precn_t sum_b = precn_new(0); precn_add(b0, b1, sum_b);
+    
+    precn_t prod_sum = precn_new(0);
+    precn_mul_karatsuba_ntt(sum_a, sum_b, prod_sum);
+
+    precn_sub(prod_sum, z0, z1);
+    precn_sub(z1, z2, z1);
+
+    precn_set(res, z0);
+    precn_add_shifted(res, z1, m);
+    precn_add_shifted(res, z2, 2 * m);
+
+    precn_free(a0); precn_free(a1);
+    precn_free(b0); precn_free(b1);
+    precn_free(z0); precn_free(z2); precn_free(z1);
+    precn_free(sum_a); precn_free(sum_b);
+    precn_free(prod_sum);
+
     return 0;
 }
 
@@ -1294,6 +1372,13 @@ int precn_mul_auto(precn_t a, precn_t b, precn_t res) {
     // Check cost:
     if (t_poly <= t_ntt) {
         return precn_mul_toom_cook(a, b, res);
+    }
+    
+    // Safety fallback for NTT limits
+    // Max safe size for 3-prime NTT with 32-bit words is approx 2^25 words (32M)
+    // However, user reports issues at >8M. Let's be conservative.
+    if ((n + m) > 8000000) {
+        return precn_mul_karatsuba_ntt(a, b, res);
     }
 
     return precn_mul_ntt(a, b, res);
