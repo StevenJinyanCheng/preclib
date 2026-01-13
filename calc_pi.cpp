@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -166,11 +167,15 @@ void bs(uint64_t a, uint64_t b, BsRes& res) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cout << "Usage: calc_pi <digits>" << std::endl;
+        std::cout << "Usage: calc_pi <digits> [file_path]" << std::endl;
         return 1;
     }
     
     int digits = std::atoi(argv[1]);
+    std::string out_file_path = "";
+    if (argc >= 3) {
+        out_file_path = argv[2];
+    }
     if (digits < 0) digits = 100;
     
     // N terms
@@ -252,6 +257,15 @@ int main(int argc, char** argv) {
         std::cout << "Last 10: " << res_s.substr(res_s.length()-10) << std::endl;
     } else {
         std::cout << res_s << std::endl;
+    }
+
+    if (!out_file_path.empty()) {
+        std::ofstream ofs(out_file_path);
+        if (ofs) {
+            if (res_s.length() > 0) {
+                 ofs << res_s[0] << "." << res_s.substr(1);
+            }
+        }
     }
     
     precn_free(big_10005); precn_free(sqrt_res); precn_free(scale);

@@ -23,14 +23,15 @@
 #include <complex>
 #include <algorithm>
 #include "uint128.hpp"
-#ifndef __GNUC__
-#ifndef __clang__
-// MSVC or stuff
-// TODO: implement __int128
-//#error "请下载GCC或Clang编译器以支持本库的完整功能。"
 #define PRECLIB_INT128_USE_CUSTOM
-#endif
-#endif
+// #ifndef __GNUC__
+// #ifndef __clang__
+// // MSVC or stuff
+// // TODO: implement __int128
+// //#error "请下载GCC或Clang编译器以支持本库的完整功能。"
+// #define PRECLIB_INT128_USE_CUSTOM
+// #endif
+// #endif
 #ifdef PRECLIB_HI
 struct __preclib_hi{
   __preclib_hi(){
@@ -815,7 +816,7 @@ int precn_mul_ntt(precn_t a, precn_t b, precn_t res) {
     while (n < as + bs) n <<= 1;
     
     //using unsigned_int128 = unsigned __int128;
-#ifdef PRECLIB_INT128_USE_CUSTOM
+#if 1
     using unsigned_int128 = preclib_uint128;
 #else
     using unsigned_int128 = unsigned __int128;
