@@ -989,15 +989,13 @@ int precn_mul_fft_complex(precn_t a, precn_t b, precn_t res) {
 // Hybrid Karatsuba-NTT for very large inputs
 // Breaks down the multiplication until chunks are small enough for NTT
 int precn_mul_karatsuba_ntt(precn_t a, precn_t b, precn_t res) {
-    uint64_t as = a->rsiz;
-    uint64_t bs = b->rsiz;
+    uint64_t as = (a != NULL) ? a->rsiz : 0;
+    uint64_t bs = (b != NULL) ? b->rsiz : 0;
 
-    // Safety threshold for NTT
-    // 4 million words per operand -> 8 million result size.
-    // Safe for ntt implementation.
-    const uint64_t NTT_SAFE_LIMIT = 4000000; 
+    // Recursively split down until result <= 4194304 limbs
+    const uint64_t NTT_LIMIT = 4194304; 
 
-    if (as + bs < 2 * NTT_SAFE_LIMIT) {
+    if (as + bs <= NTT_LIMIT) {
         // Safe to use NTT directly
 #ifdef PRECN_USE_FFT_MUL
         return precn_mul_fft_complex(a, b, res);
@@ -1377,8 +1375,8 @@ int precn_mul_auto(precn_t a, precn_t b, precn_t res) {
     
     // Safety fallback for NTT limits
     // Max safe size for 3-prime NTT with 32-bit words is approx 2^25 words (32M)
-    // However, user reports issues at >8M. Let's be conservative.
-    if ((n + m) > 8000000) {
+    // However, user reports issues at >4M. Let's be conservative.
+    if ((n + m) > 4194304) {
         return precn_mul_karatsuba_ntt(a, b, res);
     }
 
