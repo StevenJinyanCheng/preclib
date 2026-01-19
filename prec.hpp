@@ -10,7 +10,15 @@
 #define __max(a,b) (((a)>(b))?(a):(b))
 #endif
 #define PREC_VERSION "1.1"
+
+#ifdef PRECN_VERBOSE
 #define _preclib_log(msg) fprintf(stderr, "[preclib] %s\n", msg)
+#define _preclib_log_fmt(...) fprintf(stderr, "[preclib] " __VA_ARGS__)
+#else
+#define _preclib_log(msg) ((void)0)
+#define _preclib_log_fmt(...) ((void)0)
+#endif
+
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -99,6 +107,8 @@ inline void precn_realloc(precn_t a, uint64_t nsiz) {
     void *tmp = realloc(a->n, nsiz * sizeof(uint32_t));
     if (tmp == NULL) {
       /* leave original allocation intact on OOM */
+      fprintf(stderr, "[preclib] FATAL: Out of memory in precn_realloc (requested %llu words)\n", (unsigned long long)nsiz);
+      exit(2);
       return;
     }
     a->n = (uint32_t*)tmp;
@@ -1502,6 +1512,8 @@ void precn_inv_recursive(precn_t b, precn_t x) {
 int precn_div_newton(precn_t a, precn_t b, precn_t q, precn_t r) {
     if (!a || !b || b->rsiz == 0) return -1;
     
+    _preclib_log_fmt("precn_div_newton called (a_len=%llu, b_len=%llu)\n", (unsigned long long)a->rsiz, (unsigned long long)b->rsiz);
+
     // Fallback for very small
     if (b->rsiz < 32) return precn_div_slow(a, b, q, r);
     
@@ -1608,6 +1620,7 @@ int precn_div_newton(precn_t a, precn_t b, precn_t q, precn_t r) {
 // Wrapper
 int precn_div(precn_t a, precn_t b, precn_t q, precn_t r) {
     if (b->rsiz > 128) {
+        _preclib_log_fmt("precn_div: using Newton (b->rsiz=%llu)\n", (unsigned long long)b->rsiz);
         return precn_div_newton(a, b, q, r);
     }
     return precn_div_slow(a, b, q, r);
@@ -1653,7 +1666,8 @@ int precn_sqrt(precn_t a, precn_t res) {
     
     // We want result sqrt(a) which has bits_res = ceil(a_bits / 2).
     int64_t res_bits = (a_bits + 1) / 2;
-    
+    _preclib_log("Enter precn_sqrt");
+
     // If small, use simple method or just standard float estimate
     if (a->rsiz <= 2) {
         double d = 0;
@@ -1735,6 +1749,7 @@ int precn_sqrt(precn_t a, precn_t res) {
     start_shift_bits &= ~1ULL; // Ensure even
     
     precn_t top = precn_new(0);
+    _preclib_log("precn_sqrt: shifting right initial");
     precn_shift_right(res, a, start_shift_bits); // Use 'res' as temp storage for top
     precn_set(top, res);
     
@@ -1764,6 +1779,8 @@ int precn_sqrt(precn_t a, precn_t res) {
         // We want next guess for A >> next_shift.
         // Where next_shift approx current_shift / 2.
         
+        _preclib_log_fmt("precn_sqrt: loop shift %lld\n", (long long)current_shift);
+
         int64_t next_shift = current_shift / 2;
         // Align even
         next_shift &= ~1ULL;
