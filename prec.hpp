@@ -31,6 +31,7 @@
 #include <complex>
 #include <algorithm>
 #include "uint128.hpp"
+#include "prec_fft.hpp"
 #define PRECLIB_INT128_USE_CUSTOM
 // #ifndef __GNUC__
 // #ifndef __clang__
@@ -937,36 +938,51 @@ int precn_mul_fft_complex(precn_t a, precn_t b, precn_t res) {
 
     // Convert to 8-bit chunks to ensure precision in double
     // Each 32-bit word becomes 4 chunks
-    // Max value in convolution: N * (2^8)^2 = N * 2^16
-    // For N=2^20 (1M words), val = 2^36 << 2^53. Safe.
+    // Analysis: With 16-bit chunks, the DC component of FFT scales as (N * 2^16).
+    // The convolution product spectral peak is approx (N * 2^16)^2.
+    // For N=2^18 (262k), Peak = 2^36 * 2^32 = 2^68.
+    // Double precision is only 53 bits (2^53).
+    // This causes catastrophic precision loss for non-negative signals.
+    // 8-bit chunks: Peak = (N * 2^8)^2 = N^2 * 2^16.
+    // For N=2^18, Peak = 2^36 * 2^16 = 2^52. Fits in 2^53.
+    // Safety limit for 8-bit is approx N=2^18 (262k chunks = 65k words).
+    // For sizes larger than this, we rely on statistics (average case) or should use NTT.
+    
     size_t n = 1;
     while (n < 4 * (as + bs)) n <<= 1;
     
-    std::vector<fft::Complex> fa(n), fb(n);
+    std::vector<double> fa_r(n, 0.0), fa_i(n, 0.0);
+    std::vector<double> fb_r(n, 0.0), fb_i(n, 0.0);
     
     for (size_t i = 0; i < as; ++i) {
         uint32_t val = a->n[i];
-        fa[4*i]   = val & 0xFF;
-        fa[4*i+1] = (val >> 8) & 0xFF;
-        fa[4*i+2] = (val >> 16) & 0xFF;
-        fa[4*i+3] = (val >> 24);
+        fa_r[4*i]   = (double)(val & 0xFF);
+        fa_r[4*i+1] = (double)((val >> 8) & 0xFF);
+        fa_r[4*i+2] = (double)((val >> 16) & 0xFF);
+        fa_r[4*i+3] = (double)((val >> 24));
     }
     for (size_t i = 0; i < bs; ++i) {
         uint32_t val = b->n[i];
-        fb[4*i]   = val & 0xFF;
-        fb[4*i+1] = (val >> 8) & 0xFF;
-        fb[4*i+2] = (val >> 16) & 0xFF;
-        fb[4*i+3] = (val >> 24);
+        fb_r[4*i]   = (double)(val & 0xFF);
+        fb_r[4*i+1] = (double)((val >> 8) & 0xFF);
+        fb_r[4*i+2] = (double)((val >> 16) & 0xFF);
+        fb_r[4*i+3] = (double)((val >> 24));
     }
     
-    fft::fft(fa, false);
-    fft::fft(fb, false);
+    precn_impl::quick_fft::fft(fa_r.data(), fa_i.data(), n, false);
+    precn_impl::quick_fft::fft(fb_r.data(), fb_i.data(), n, false);
     
     for (size_t i = 0; i < n; ++i) {
-        fa[i] *= fb[i];
+        double ar = fa_r[i];
+        double ai = fa_i[i];
+        double br = fb_r[i];
+        double bi = fb_i[i];
+        
+        fa_r[i] = ar * br - ai * bi;
+        fa_i[i] = ar * bi + ai * br;
     }
     
-    fft::fft(fa, true);
+    precn_impl::quick_fft::fft(fa_r.data(), fa_i.data(), n, true);
     
     // Reconstruct
     uint64_t res_len = as + bs;
@@ -974,10 +990,8 @@ int precn_mul_fft_complex(precn_t a, precn_t b, precn_t res) {
     if (res->asiz < res_len) return -1; // OOM
     
     uint64_t carry = 0;
-    // We have 4 chunks per word of output roughly
-    // But we need to reconstruct 32-bit words from 8-bit stream
     for (size_t i = 0; i < res_len * 4; ++i) {
-        uint64_t val = (uint64_t)(fa[i].real() + 0.5) + carry;
+        uint64_t val = (uint64_t)(fa_r[i] + 0.5) + carry;
         carry = val >> 8;
         uint32_t part = val & 0xFF;
         
@@ -1002,8 +1016,10 @@ int precn_mul_karatsuba_ntt(precn_t a, precn_t b, precn_t res) {
     uint64_t as = (a != NULL) ? a->rsiz : 0;
     uint64_t bs = (b != NULL) ? b->rsiz : 0;
 
-    // Recursively split down until result <= 4194304 limbs
-    const uint64_t NTT_LIMIT = 4194304; 
+    // For 8-bit split FFT (double), safe N is huge (approx 2^50).
+    // Cache locality starts to hurt eventually, but 8-bit is much faster for valid ranges.
+    // Setting limit to huge (128M words) to cover almost all physical RAM cases.
+    const uint64_t NTT_LIMIT = 134217728; 
 
     if (as + bs <= NTT_LIMIT) {
         // Safe to use NTT directly
@@ -1390,7 +1406,11 @@ int precn_mul_auto(precn_t a, precn_t b, precn_t res) {
         return precn_mul_karatsuba_ntt(a, b, res);
     }
 
+#ifdef PRECN_USE_FFT_MUL
+    return precn_mul_fft_complex(a, b, res);
+#else
     return precn_mul_ntt(a, b, res);
+#endif
 }
 int precn_mul(precn_t a, precn_t b, precn_t res) {
     return precn_mul_auto(a, b, res);
@@ -2178,6 +2198,19 @@ struct precn {
     precn() { p = precn_impl::precn_new(0); }
     template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
     precn(T v) { p = precn_impl::precn_new(v); }
+    template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
+    operator T() const {
+        // Convert to integral type (may truncate)
+        T res = 0;
+        precn_impl::precn_t ptr = p;
+        size_t lim = sizeof(T) / 4;
+        if (ptr) {
+            for(size_t i=0; i<ptr->rsiz && i<lim; ++i) {
+                res |= ((T)(ptr->n[i])) << (i * 32);
+            }
+        }
+        return res;
+    }
     precn(const char* s) { p = precn_impl::precn_new(0); precn_impl::precn_from_str(p, s); }
     precn(const std::string& s) : precn(s.c_str()) {}
 
@@ -2245,7 +2278,19 @@ struct precz {
             p = precn((uint64_t)(-v)); sign = -1;
         }
     }
-
+    template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
+    operator T() const {
+        T res = 0;
+        precn_impl::precn_t ptr = p.get();
+        size_t lim = sizeof(T) / 4;
+        if (ptr) {
+            for(size_t i=0; i<ptr->rsiz && i<lim; ++i) {
+                res |= ((T)(ptr->n[i])) << (i * 32);
+            }
+        }
+        if (sign == -1) res = -res;
+        return res;
+    }
     precz(const char* s) {
         if (s && s[0] == '-') {
             sign = -1;
