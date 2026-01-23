@@ -136,7 +136,8 @@ void DoCalculateW() {
             }
             g_Regs[rRes] = res;
             log << RegLabel(rRes) << L" = " << RegLabel(rOp1) << L" " << opSym << L" " << RegLabel(rOp2);
-            log << L"\r\n结果(" << RegLabel(rRes) << L") = " << std::wstring(res.to_string().begin(), res.to_string().end());
+            std::string s_res = res.to_string();
+            log << L"\r\n结果(" << RegLabel(rRes) << L") = " << std::wstring(s_res.begin(), s_res.end());
         }
         else if (SendMessageW(hRadioPow, BM_GETCHECK, 0, 0) == BST_CHECKED) {
             int rRes = GetComboSel(hC_Pow_Res);
@@ -176,7 +177,8 @@ void DoCalculateW() {
             } else { k = 0; }
             g_Regs[rRes] = k;
             log << RegLabel(rRes) << L" = 开方(" << RegLabel(rOp) << L")";
-            log << L"\r\n结果 = " << std::wstring(k.to_string().begin(), k.to_string().end());
+            std::string s_k = k.to_string();
+            log << L"\r\n结果 = " << std::wstring(s_k.begin(), s_k.end());
         }
         else if (SendMessageW(hRadioGCD, BM_GETCHECK, 0, 0) == BST_CHECKED) {
              int rRes = GetComboSel(hC_GCD_Res);
@@ -185,7 +187,8 @@ void DoCalculateW() {
              precz res = prec_factor::gcd(g_Regs[rOp1], g_Regs[rOp2]);
              g_Regs[rRes] = res;
              log << RegLabel(rRes) << L" = 最大公约数(" << RegLabel(rOp1) << L", " << RegLabel(rOp2) << L")";
-             log << L"\r\n结果 = " << std::wstring(res.to_string().begin(), res.to_string().end());
+             std::string s_res = res.to_string();
+             log << L"\r\n结果 = " << std::wstring(s_res.begin(), s_res.end());
         }
     } catch (const std::exception& e) {
         std::string what = e.what();
