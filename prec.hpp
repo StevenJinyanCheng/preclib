@@ -32,6 +32,8 @@
 #include <algorithm>
 #include "uint128.hpp"
 #include "prec_fft.hpp"
+// Default to using the AVX2 FFT multiplication as it is faster and safe.
+#define PRECN_USE_FFT_MUL
 #define PRECLIB_INT128_USE_CUSTOM
 // #ifndef __GNUC__
 // #ifndef __clang__
@@ -2199,7 +2201,7 @@ struct precn {
     template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
     precn(T v) { p = precn_impl::precn_new(v); }
     template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
-    operator T() const {
+    explicit operator T() const {
         // Convert to integral type (may truncate)
         T res = 0;
         precn_impl::precn_t ptr = p;
@@ -2240,9 +2242,73 @@ struct precn {
 
     precn operator+(const precn& o) const { precn r; precn_impl::precn_add(p, o.p, r.p); return r; }
     precn operator-(const precn& o) const { precn r; precn_impl::precn_sub(p, o.p, r.p); return r; }
-    precn operator*(const precn& o) const { precn r; precn_impl::precn_mul(p, o.p, r.p); return r; }
+    precn operator*(const precn& o) const { 
+        precn r; 
+        if (precn_impl::precn_mul(p, o.p, r.p) != 0) {
+            #ifdef __cpp_exceptions
+            throw std::runtime_error("precn multiplication failed");
+            #else
+            fprintf(stderr, "precn multiplication failed\n");
+            exit(1);
+            #endif
+        }
+        return r; 
+    }
     precn operator/(const precn& o) const { precn q, rem; precn_impl::precn_div(p, o.p, q.p, rem.p); return q; }
     precn operator%(const precn& o) const { precn q, rem; precn_impl::precn_div(p, o.p, q.p, rem.p); return rem; }
+
+    // Helpers for cleaner syntax
+    bool is_zero() const { return p && (p->rsiz == 0 || (p->rsiz == 1 && p->n[0] == 0)); }
+    bool is_even() const { 
+        if (!p || p->rsiz == 0) return true; // 0 is even
+        return !(p->n[0] & 1); 
+    }
+
+    precn operator<<(int shift) const {
+        precn r; precn_impl::precn_shift_left(r.p, p, shift); return r;
+    }
+    precn operator>>(int shift) const {
+        precn r; precn_impl::precn_shift_right(r.p, p, shift); return r;
+    }
+    
+    precn& operator+=(const precn& o) { precn_impl::precn_add(p, o.p, p); return *this; }
+    precn& operator-=(const precn& o) { precn_impl::precn_sub(p, o.p, p); return *this; }
+    precn& operator*=(const precn& o) { 
+        if (precn_impl::precn_mul(p, o.p, p) != 0) {
+            #ifdef __cpp_exceptions
+            throw std::runtime_error("precn multiplication failed");
+            #else
+            exit(1);
+            #endif
+        }
+        return *this; 
+    }
+    precn& operator/=(const precn& o) { precn q, r; precn_impl::precn_div(p, o.p, q.p, r.p); return *this = q; }
+    precn& operator%=(const precn& o) { precn q, r; precn_impl::precn_div(p, o.p, q.p, r.p); return *this = r; }
+    precn& operator<<=(int shift) { precn_impl::precn_shift_left(p, p, shift); return *this; }
+    precn& operator>>=(int shift) { precn_impl::precn_shift_right(p, p, shift); return *this; }
+    
+    // Prefix/Postfix increment/decrement
+    precn& operator++() { *this += 1; return *this; }
+    precn operator++(int) { precn temp = *this; ++(*this); return temp; }
+    precn& operator--() { *this -= 1; return *this; }
+    precn operator--(int) { precn temp = *this; --(*this); return temp; }
+
+    // IO Stream
+    friend std::ostream& operator<<(std::ostream& os, const precn& n) {
+        return os << n.to_string();
+    }
+    friend std::istream& operator>>(std::istream& is, precn& n) {
+        std::string s; is >> s; n = precn(s); return is;
+    }
+    
+    // comparisons
+    bool operator==(const precn& o) const { return precn_impl::precn_cmp(p,o.p)==0; }
+    bool operator!=(const precn& o) const { return !(*this==o); }
+    bool operator<(const precn& o) const { return precn_impl::precn_cmp(p,o.p)<0; }
+    bool operator>(const precn& o) const { return precn_impl::precn_cmp(p,o.p)>0; }
+    bool operator<=(const precn& o) const { return !(*this>o); }
+    bool operator>=(const precn& o) const { return !(*this<o); }
 
     std::string to_string() const {
         char* s = precn_impl::precn_to_str(p);
@@ -2279,7 +2345,7 @@ struct precz {
         }
     }
     template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
-    operator T() const {
+    explicit operator T() const {
         T res = 0;
         precn_impl::precn_t ptr = p.get();
         size_t lim = sizeof(T) / 4;
@@ -2364,7 +2430,13 @@ struct precz {
 
     precz operator*(const precz& o) const {
         precz r;
-        precn_impl::precn_mul(p.get(), o.p.get(), r.p.get());
+        if (precn_impl::precn_mul(p.get(), o.p.get(), r.p.get()) != 0) {
+             #ifdef __cpp_exceptions
+             throw std::runtime_error("precz multiplication failed");
+             #else
+             exit(1);
+             #endif
+        }
         r.sign = sign * o.sign;
         r._normalize();
         return r;
@@ -2386,6 +2458,40 @@ struct precz {
         rem.sign = sign; // remainder follows dividend sign typically in C
         rem._normalize();
         return rem;
+    }
+
+    // Helpers
+    bool is_even() const { return p.is_even(); }
+    
+    // Shifts (only affect magnitude, sign preserved)
+    precz operator<<(int shift) const {
+        precz r; r.p = p << shift; r.sign = sign; return r;
+    }
+    precz operator>>(int shift) const {
+        precz r; r.p = p >> shift; r.sign = sign; r._normalize(); return r;
+    }
+    precz& operator>>=(int shift) { p >>= shift; _normalize(); return *this; }
+    precz& operator<<=(int shift) { p <<= shift; return *this; }
+
+    // Compound assignments
+    precz& operator+=(const precz& o) { *this = *this + o; return *this; }
+    precz& operator-=(const precz& o) { *this = *this - o; return *this; }
+    precz& operator*=(const precz& o) { *this = *this * o; return *this; }
+    precz& operator/=(const precz& o) { *this = *this / o; return *this; }
+    precz& operator%=(const precz& o) { *this = *this % o; return *this; }
+    
+    // Prefix/Postfix increment/decrement
+    precz& operator++() { *this += 1; return *this; }
+    precz operator++(int) { precz temp = *this; ++(*this); return temp; }
+    precz& operator--() { *this -= 1; return *this; }
+    precz operator--(int) { precz temp = *this; --(*this); return temp; }
+
+    // IO Stream
+    friend std::ostream& operator<<(std::ostream& os, const precz& n) {
+        return os << n.to_string();
+    }
+    friend std::istream& operator>>(std::istream& is, precz& n) {
+        std::string s; is >> s; n = precz(s.c_str()); return is;
     }
 
     std::string to_string() const {
